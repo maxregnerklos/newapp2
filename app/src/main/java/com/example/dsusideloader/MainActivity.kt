@@ -1,165 +1,173 @@
-class MainActivity : AppCompatActivity() {
-    private lateinit var binding: ActivityMainBinding
-    private val viewModel: DsuViewModel by viewModels()
-    
+package vegabobo.dsusideloader
+
+import android.content.ComponentName
+import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Bundle
+import android.util.Log
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.core.view.WindowCompat
+import com.topjohnwu.superuser.Shell
+import com.topjohnwu.superuser.ipc.RootService
+import dagger.hilt.android.AndroidEntryPoint
+import javax.inject.Inject
+import org.lsposed.hiddenapibypass.HiddenApiBypass
+import rikka.shizuku.Shizuku
+import rikka.shizuku.ShizukuProvider
+import vegabobo.dsusideloader.model.Session
+import vegabobo.dsusideloader.service.PrivilegedProvider
+import vegabobo.dsusideloader.service.PrivilegedRootService
+import vegabobo.dsusideloader.service.PrivilegedService
+import vegabobo.dsusideloader.service.PrivilegedSystemService
+import vegabobo.dsusideloader.ui.screen.Navigation
+import vegabobo.dsusideloader.ui.theme.DSUHelperTheme
+import vegabobo.dsusideloader.util.OperationMode
+import vegabobo.dsusideloader.util.OperationModeUtils
+
+@AndroidEntryPoint
+class MainActivity : ComponentActivity(), Shizuku.OnRequestPermissionResultListener {
+
+    @Inject
+    lateinit var session: Session
+
+    private val tag = this.javaClass.simpleName
+
+    private var shouldCheckShizuku = false
+
+    private fun setupSessionOperationMode() {
+        val operationMode = OperationModeUtils.getOperationMode(application, shouldCheckShizuku)
+        session.setOperationMode(operationMode)
+        Log.d(tag, "Operation mode is: $operationMode")
+    }
+
+    //
+    // Shizuku
+    //
+
+    val userServiceArgs =
+        Shizuku.UserServiceArgs(
+            ComponentName(BuildConfig.APPLICATION_ID, PrivilegedService::class.java.name),
+        )
+            .daemon(false)
+            .processNameSuffix("service")
+            .debuggable(BuildConfig.DEBUG)
+            .version(BuildConfig.VERSION_CODE)
+
+    private val SHIZUKU_REQUEST_CODE = 1000
+    private val REQUEST_PERMISSION_RESULT_LISTENER = this::onRequestPermissionResult
+
+    private fun addShizukuListeners() {
+        Shizuku.addBinderReceivedListenerSticky(BINDER_RECEIVED_LISTENER)
+        Shizuku.addRequestPermissionResultListener(REQUEST_PERMISSION_RESULT_LISTENER)
+    }
+
+    private fun removeShizukuListeners() {
+        Shizuku.removeRequestPermissionResultListener(REQUEST_PERMISSION_RESULT_LISTENER)
+        Shizuku.removeBinderReceivedListener(BINDER_RECEIVED_LISTENER)
+    }
+
+    private val BINDER_RECEIVED_LISTENER = Shizuku.OnBinderReceivedListener {
+        if (!OperationModeUtils.isShizukuPermissionGranted(this)) {
+            askShizukuPermission()
+            return@OnBinderReceivedListener
+        }
+        bindShizuku()
+    }
+
+    private fun askShizukuPermission() {
+        if (Shizuku.isPreV11() || Shizuku.getVersion() < 11) {
+            requestPermissions(arrayOf(ShizukuProvider.PERMISSION), SHIZUKU_REQUEST_CODE)
+        } else {
+            Shizuku.requestPermission(SHIZUKU_REQUEST_CODE)
+        }
+    }
+
+    override fun onRequestPermissionResult(requestCode: Int, grantResult: Int) {
+        if (grantResult == PackageManager.PERMISSION_GRANTED && requestCode == SHIZUKU_REQUEST_CODE) {
+            bindShizuku()
+        }
+        Shizuku.removeRequestPermissionResultListener(REQUEST_PERMISSION_RESULT_LISTENER)
+    }
+
+    fun bindShizuku() {
+        Shizuku.bindUserService(userServiceArgs, PrivilegedProvider.connection)
+        shouldCheckShizuku = true
+        setupSessionOperationMode()
+    }
+
+    //
+    // Root
+    //
+
+    companion object {
+        init {
+            // Shell.enableVerboseLogging = BuildConfig.DEBUG
+            Shell.setDefaultBuilder(
+                Shell.Builder.create()
+                    .setFlags(Shell.FLAG_REDIRECT_STDERR)
+                    .setTimeout(10),
+            )
+        }
+    }
+
+    private fun setupService() {
+        if (session.isRoot()) {
+            val privRootService = Intent(this, PrivilegedRootService::class.java)
+            RootService.bind(privRootService, PrivilegedProvider.connection)
+            return
+        }
+
+        if (session.getOperationMode() == OperationMode.SYSTEM) {
+            val service = Intent(this, PrivilegedSystemService::class.java)
+            bindService(service, PrivilegedProvider.connection, Context.BIND_AUTO_CREATE)
+            return
+        }
+
+        addShizukuListeners()
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        binding = ActivityMainBinding.inflate(layoutInflater)
-        setContentView(binding.root)
-        
-        setupTheme()
-        setupObservers()
-        setupClickListeners()
-        setupNotificationChannel()
-    }
-    
-    private fun setupTheme() {
-        // Apply theme based on system settings
-        when (resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) {
-            Configuration.UI_MODE_NIGHT_YES -> AppCompatDelegate.setDefaultNightMode(AppCompatDelegate.MODE_NIGHT_YES)
-            Configuration.UI_MODE_NIGHT_NO -> AppCompatDelegate.setDefaultNightMode(AppCompatDelegate.MODE_NIGHT_NO)
-        }
-    }
-    
-    private fun setupObservers() {
-        viewModel.dsuProgress.observe(this) { progress ->
-            binding.progressBar.progress = progress
-            updateProgressUI(progress)
-        }
-        
-        viewModel.status.observe(this) { status ->
-            binding.tvStatus.text = status
-            updateStatusUI(status)
-        }
+        Shell.getShell {}
+        WindowCompat.setDecorFitsSystemWindows(window, false)
 
-        viewModel.compatibility.observe(this) { compatibility ->
-            handleCompatibilityStatus(compatibility)
-        }
-
-        viewModel.backgroundOperation.observe(this) { isRunning ->
-            binding.btnLoadDsu.isEnabled = !isRunning
-            binding.btnApplyDsu.isEnabled = !isRunning
-        }
-    }
-
-    private fun updateProgressUI(progress: Int) {
-        binding.progressBar.apply {
-            isIndeterminate = progress == -1
-            if (progress >= 0) {
-                setProgressCompat(progress, true)
+        setContent {
+            DSUHelperTheme {
+                Navigation()
             }
         }
-    }
 
-    private fun updateStatusUI(status: String) {
-        binding.tvStatus.apply {
-            text = status
-            setTextColor(getStatusColor(status))
+        if (savedInstanceState == null) {
+            setupSessionOperationMode()
+            setupService()
         }
     }
 
-    private fun getStatusColor(status: String): Int {
-        return when {
-            status.contains("error", ignoreCase = true) -> 
-                ContextCompat.getColor(this, R.color.error_color)
-            status.contains("success", ignoreCase = true) -> 
-                ContextCompat.getColor(this, R.color.success_color)
-            else -> ContextCompat.getColor(this, R.color.default_text_color)
-        }
+    override fun attachBaseContext(newBase: Context?) {
+        HiddenApiBypass.addHiddenApiExemptions("")
+        super.attachBaseContext(newBase)
     }
 
-    private fun handleCompatibilityStatus(compatibility: DsuCompatibility) {
-        when (compatibility) {
-            is DsuCompatibility.Incompatible -> showIncompatibilityDialog(compatibility.reason)
-            is DsuCompatibility.Compatible -> proceedWithDsuOperation()
+    override fun onDestroy() {
+        super.onDestroy()
+        if (isChangingConfigurations) {
+            return
         }
-    }
+        when (session.getOperationMode()) {
+            OperationMode.ROOT, OperationMode.SYSTEM_AND_ROOT ->
+                RootService.unbind(PrivilegedProvider.connection)
 
-    private fun showIncompatibilityDialog(reason: String) {
-        MaterialAlertDialogBuilder(this)
-            .setTitle(R.string.compatibility_warning)
-            .setMessage(getString(R.string.compatibility_warning_message, reason))
-            .setPositiveButton(R.string.continue_anyway) { _, _ -> 
-                proceedWithDsuOperation()
+            OperationMode.SYSTEM ->
+                applicationContext.unbindService(PrivilegedProvider.connection)
+
+            OperationMode.SHIZUKU -> {
+                removeShizukuListeners()
+                Shizuku.unbindUserService(userServiceArgs, PrivilegedProvider.connection, true)
             }
-            .setNegativeButton(R.string.cancel, null)
-            .show()
-    }
 
-    private fun proceedWithDsuOperation() {
-        // Implementation for proceeding with DSU operation
-    }
-
-    private fun setupNotificationChannel() {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
-                "dsu_channel",
-                "DSU Operations",
-                NotificationManager.IMPORTANCE_HIGH
-            ).apply {
-                description = "Notifications for DSU operations"
-            }
-            val notificationManager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-            notificationManager.createNotificationChannel(channel)
+            else -> {}
         }
     }
-
-    private fun checkBatteryLevel(): Boolean {
-        val batteryManager = getSystemService(Context.BATTERY_SERVICE) as BatteryManager
-        val batteryLevel = batteryManager.getIntProperty(BatteryManager.BATTERY_PROPERTY_CAPACITY)
-        val isCharging = batteryManager.isCharging()
-        
-        return when {
-            batteryLevel >= 50 -> true
-            batteryLevel >= 20 && isCharging -> {
-                showBatteryWarningDialog(true)
-                true
-            }
-            else -> {
-                showBatteryWarningDialog(false)
-                false
-            }
-        }
-    }
-    
-    private fun showBatteryWarningDialog(canProceed: Boolean) {
-        MaterialAlertDialogBuilder(this)
-            .setTitle(R.string.battery_warning)
-            .setMessage(if (canProceed) 
-                R.string.battery_charging_warning_message 
-                else R.string.battery_critical_warning_message)
-            .apply {
-                if (canProceed) {
-                    setPositiveButton(R.string.continue_anyway) { _, _ -> 
-                        proceedWithDsuOperation()
-                    }
-                }
-                setNegativeButton(R.string.cancel, null)
-            }
-            .show()
-    }
-
-    private fun BatteryManager.isCharging(): Boolean {
-        val status = getIntProperty(BatteryManager.BATTERY_PROPERTY_STATUS)
-        return status == BatteryManager.BATTERY_STATUS_CHARGING || 
-               status == BatteryManager.BATTERY_STATUS_FULL
-    }
-
-    private fun setupClickListeners() {
-        binding.btnLoadDsu.setOnClickListener {
-            if (checkBatteryLevel()) {
-                viewModel.loadDsu()
-            }
-        }
-        
-        binding.btnApplyDsu.setOnClickListener {
-            if (checkBatteryLevel()) {
-                viewModel.applyDsu()
-            }
-        }
-        
-        binding.fabSettings.setOnClickListener {
-            SettingsBottomSheet().show(supportFragmentManager, "settings")
-        }
-    }
-} 
+}
