@@ -5,7 +5,6 @@ on:
     branches: [ "master" ]
   pull_request:
     branches: [ "master" ]
-  workflow_dispatch:
 
 jobs:
   build:
@@ -14,8 +13,7 @@ jobs:
 
     steps:
     - uses: actions/checkout@v3
-    
-    - name: Set up JDK 17
+    - name: set up JDK 17
       uses: actions/setup-java@v3
       with:
         java-version: '17'
@@ -24,12 +22,14 @@ jobs:
 
     - name: Grant execute permission for gradlew
       run: chmod +x gradlew
-
+      
     - name: Build with Gradle
-      run: ./gradlew assembleMiniDebug --daemon
-    
+      run: ./gradlew assembleMiniDebug
+      
     - name: Archive artifacts
       uses: actions/upload-artifact@v3
       with:
         name: outputs-apk-minidebug
-        path: app/build/outputs/apk/miniDebug/*.apk
+        path: app/build/outputs/apk/miniDebug
+        
+        
