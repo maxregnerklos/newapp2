@@ -5,6 +5,7 @@ on:
     branches: [ "master" ]
   pull_request:
     branches: [ "master" ]
+  workflow_dispatch: # This adds the workflow dispatch trigger
 
 jobs:
   build:
@@ -22,14 +23,12 @@ jobs:
 
     - name: Grant execute permission for gradlew
       run: chmod +x gradlew
-      
+        
     - name: Build with Gradle
       run: ./gradlew assembleMiniDebug
-      
+        
     - name: Archive artifacts
       uses: actions/upload-artifact@v3
       with:
         name: outputs-apk-minidebug
         path: app/build/outputs/apk/miniDebug
-        
-        
